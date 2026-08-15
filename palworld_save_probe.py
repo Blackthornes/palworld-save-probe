@@ -236,7 +236,7 @@ def read_gvas_header(data: bytes) -> dict:
             out["engine_version_branch"] = (
                 data[30:30 + blen].rstrip(b"\x00").decode("utf-8", errors="replace")
             )
-    except Exception as e:  # header shape changed; not fatal for Tier 1
+    except Exception as e:  # header shape changed; does not affect container integrity
         out["header_walk_error"] = f"{type(e).__name__}: {e}"
     return out
 
@@ -312,7 +312,7 @@ def probe_file(path: str) -> dict:
             "file cannot be vouched for either way."
         )
 
-    # --- Tier 1: structural integrity ------------------------------------
+    # --- structural integrity: is the container whole? ------------------------------------
     # For backup verification we care about: is the header coherent, and is the
     # payload the length it claims to be? That catches torn writes, which is the
     # actual failure mode we are selling against.
@@ -338,7 +338,7 @@ def probe_file(path: str) -> dict:
         structural_ok = False
         r["notes"].append("Header declares zero uncompressed length - suspicious.")
 
-    # --- Tier 1 continued + Tier 2: decompression ------------------------
+    # --- decompression: integrity continued, plus deep parsing ------------------------
     codec, blob = try_codecs(payload)
     if codec:
         r["codec"] = codec
@@ -379,7 +379,7 @@ def probe_file(path: str) -> dict:
         r["notes"].append(
             f"Could not decompress with any known codec. Diagnosis: {r['codec_guess']}"
         )
-        # If we cannot decompress, Tier 1 can still pass on header coherence alone,
+        # If we cannot decompress, the container can still be judged whole on header
         # but only if the declared lengths are self-consistent.
         if save_type not in SAVE_TYPES:
             r["notes"].append(
