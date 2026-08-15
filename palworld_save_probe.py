@@ -564,7 +564,7 @@ def report(results):
             print(f"  ERROR           : {r['error']}")
             for n in r.get("notes", []):
                 print(f"  note            : {n}")
-            print(f"  TIER 1          : FAIL")
+            print(f"  BACKUP INTACT   : FAILED")
             continue
         print(f"  magic bytes     : {r['magic_bytes']!r}  (hex {r['magic_hex']})"
               f"{'  <-- KNOWN' if r['magic_is_known'] else '  <-- UNKNOWN/NEW'}")
@@ -594,47 +594,60 @@ def report(results):
     verified = sum(1 for r in results if r.get("state") == VERIFIED)
     unverified = sum(1 for r in results if r.get("state") == UNVERIFIED)
     broken = sum(1 for r in results if r.get("state", FAILED) == FAILED)
-    t1 = verified
-    t2 = sum(1 for r in results if r["tier2_pass"])
+    deep = sum(1 for r in results if r["tier2_pass"])
     n = len(results)
 
     print("\n" + "=" * W)
     print("VERDICT")
     print("=" * W)
-    print(f"  Tier 1 -- backup intact          : {t1}/{n} files")
-    print(f"  Tier 2 -- save fully parseable   : {t2}/{n} files\n")
+    print(f"  verified   : {verified}/{n} files -- complete, and we can say so")
+    print(f"  unverified : {unverified}/{n} files -- plausible, but unprovable")
+    print(f"  failed     : {broken}/{n} files -- damaged")
+    print(f"  (deep parse: {deep}/{n} files)\n")
 
-    if t1 == n and t2 == n:
-        print("  YOUR BACKUP LOOKS GOOD.")
-        print("  Every file is complete, and the save data is fully readable.")
-        print("  Note that this proves the files are whole, not that the world will")
-        print("  load. Only an actual restore proves a restore.")
-    elif t1 == n:
-        print("  YOUR BACKUP LOOKS GOOD.")
-        print("  Every file is complete and nothing was lost to a torn write.")
-        print()
-        print("  Tier 2 failed, which is expected on current Palworld and is not a")
-        print("  problem with your backup. The save payload uses a codec no open")
-        print("  tool can currently decompress, so save editors and analysers cannot")
-        print("  read it either. That does not affect whether your backup is intact.")
-        print()
-        print("  Note that this proves the files are whole, not that the world will")
-        print("  load. Only an actual restore proves a restore.")
-    elif t1 > 0:
-        print("  SOME FILES ARE DAMAGED.")
-        print("  Read the per-file results above -- the ones marked TIER 1 FAIL are")
-        print("  not restorable. This usually means the backup was taken while the")
-        print("  server was still writing.")
-        print()
-        print("  What to do: check your older backups with this same command; they")
-        print("  may be fine. Then fix the process that produced this one.")
-    else:
+    # Order matters: damage outranks doubt, and doubt outranks a clean bill. Reporting
+    # an unverified file as damaged would send someone hunting for corruption that is
+    # not there; reporting it as fine would be the false confidence this tool exists
+    # to refuse.
+    if broken == n:
         print("  NO FILE PASSED.")
         print("  If these are real save files, none of them are restorable.")
         print()
         print("  Before concluding that: confirm the path pointed at actual .sav")
         print("  files, and that you probed a COPY rather than a file the server is")
         print("  writing to right now -- a live file may legitimately be mid-write.")
+    elif broken:
+        print("  SOME FILES ARE DAMAGED.")
+        print("  Read the per-file results above -- the ones marked FAILED are not")
+        print("  restorable. This usually means the backup was taken while the")
+        print("  server was still writing.")
+        print()
+        print("  What to do: check your older backups with this same command; they")
+        print("  may be fine. Then fix the process that produced this one.")
+    elif unverified:
+        print("  CANNOT VERIFY THESE FILES.")
+        print("  Nothing here is damaged as far as we can tell -- but some files")
+        print("  carry a format signature this tool does not recognise, so its")
+        print("  checks cannot be given meaning. That is not the same as saying")
+        print("  your backup is bad, and it is not the same as saying it is good.")
+        print()
+        print("  Most likely Palworld changed its save format and this tool needs")
+        print("  updating. Please report it so it can be fixed for everyone.")
+        print()
+        print("  Until then, keep your older backups rather than rotating them out.")
+    else:
+        print("  YOUR BACKUP LOOKS GOOD.")
+        print("  Every file is complete and nothing was lost to a torn write.")
+        if deep < n:
+            print()
+            print("  Deep parsing failed, which is expected on current Palworld and is")
+            print("  not a problem with your backup. The save payload uses a codec no")
+            print("  open tool can currently decompress, so save editors and analysers")
+            print("  cannot read it either. That has no bearing on whether your backup")
+            print("  is intact.")
+        print()
+        print("  Note that this proves the files are whole, not that the world will")
+        print("  load. Only an actual restore proves a restore.")
     print()
 
 
