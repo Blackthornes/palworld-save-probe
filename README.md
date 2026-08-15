@@ -92,11 +92,10 @@ would be useful to everyone working on Palworld tooling.
 The intuitive fix is to wait a few seconds after requesting a save before copying.
 That helps, but it can't be relied on, because there is no correct constant to pick.
 
-Measured on our dev server: a fresh 15 KB world settled **8 seconds** after the API
-returned 200. A populated 50 MB world takes considerably longer. So any fixed delay
-is simultaneously too long for small worlds and too short for large ones — and which
-way it fails depends on the world you didn't test against. Disk speed and server load
-move the number too.
+The delay isn't a constant. It scales with world size, disk speed, and current server
+load — the same server can need different amounts of time on two consecutive saves.
+Any fixed value is too long for a small world and too short for a large one, and which
+way it fails depends on the world you didn't test against.
 
 The reliable approach is to watch the file until it stops changing, then copy — and
 then check the result anyway. "Probably finished" isn't the standard you want for the
@@ -155,6 +154,5 @@ MIT. Do what you like with it.
 
 *Built while developing a paid tool that does the automated version of this: waits for
 each write to settle, backs up off-box, verifies every snapshot, and tells you when one
-fails. <!-- TODO: link the product landing page here once it exists. Do NOT link the
-private strategy repo. --> The probe is free and always will be — if it tells you your
+fails. The probe is free and always will be — if it tells you your
 backups are fine, that is a complete and useful answer and you need nothing else.*
