@@ -1,0 +1,45 @@
+name: selftest
+
+# The probe's credibility rests on it demonstrably catching a torn write. Prove
+# that on every push, on every supported Python, in public.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly. Catches a Python release breaking us before a user does.
+    - cron: "0 6 * * 1"
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Run self-test
+        run: python palworld_save_probe.py --selftest
+      - name: Confirm a torn save actually fails
+        # Belt and braces: the self-test asserts this internally, but a
+        # non-zero exit on real truncation is the contract users depend on.
+        run: |
+          python - <<'EOF'
+          import zlib, sys
+          body = b"GVAS" + bytes(64) + bytes(range(256)) * 64
+          comp = zlib.compress(body)
+          blob = (len(body).to_bytes(4, "little")
+                  + len(comp).to_bytes(4, "little")
+                  + b"PlM" + bytes([0x31]) + comp)
+          open("Level.sav", "wb").write(blob[:-1])   # lose exactly one byte
+          EOF
+          if python palworld_save_probe.py Level.sav; then
+            echo "FAIL: probe passed a truncated save"
+            exit 1
+          fi
+          echo "OK: truncated save correctly rejected"
