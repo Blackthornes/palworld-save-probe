@@ -370,8 +370,8 @@ def probe_file(path: str) -> dict:
             r["notes"].append("GVAS header valid - deep parsing is viable.")
         else:
             r["notes"].append(
-                "Decompressed successfully but payload is not GVAS - "
-                "inner format changed. Tier 1 still OK."
+                "Decompressed successfully but payload is not GVAS - the inner "
+                "format changed. The container itself is still fine."
             )
     else:
         r["codec"] = None
