@@ -16,7 +16,17 @@ No server, no network, nothing installed:
 python3 palworld_save_probe.py --selftest
 ```
 
-Exit code `0` means every file passed. `1` means at least one did not.
+| Exit code | Meaning |
+|---|---|
+| `0` | Every file **verified** — complete, and we can say so |
+| `1` | At least one file **failed** — it is damaged |
+| `3` | Nothing failed, but at least one file is **unverified** — see below |
+| `2` | Usage or IO error |
+
+> **Changed 2026-08-15:** exit code `3` is new. Previously a file with an
+> unrecognised format signature exited `0` alongside genuinely verified files. If you
+> script against this, treat `3` as "look at this" rather than "all good". Codes `0`,
+> `1` and `2` are unchanged.
 
 ---
 
@@ -37,9 +47,27 @@ nothing in the normal path ever disagrees with you.
 
 ## What the probe checks
 
-It reports **two independent verdicts**, because they mean different things.
+### Is the backup intact? — three answers, not two
 
-### Tier 1 — is the backup intact?
+| Result | Meaning |
+|---|---|
+| **verified** | The format is one this tool knows and every check passed. Complete, and we can say so. |
+| **unverified** | Structurally plausible, but its format signature isn't one we recognise, so the checks can't be given meaning. **Not a sign of damage** — an inability to prove the file is sound. |
+| **failed** | A check actively failed: truncation, trailing data, a null header. The file is damaged. |
+
+The middle one exists because a pass/fail answer would force a wrong verdict. A file
+with an unfamiliar signature can satisfy the length check while that check proves
+nothing — if the layout changed, the bytes read as `compressed_len` may not be
+`compressed_len` at all.
+
+Calling that a pass would be a quieter version of `tar` exiting 0 on a torn save: a
+success that isn't evidence of anything. So the tool says plainly that it cannot tell,
+which is a less satisfying answer and a more useful one.
+
+If you get **unverified**, it most likely means Palworld changed its save format and
+this tool needs updating. Please open an issue.
+
+### How it checks
 
 Reads the container header, which declares exactly how many payload bytes should
 follow it, and compares that to how many bytes are actually there.
@@ -58,10 +86,11 @@ torn write. This catches a **single missing byte**.
 It requires no understanding of the game's data at all — which is why it still works
 even though the next part doesn't.
 
-### Tier 2 — can the save be fully parsed?
+### Separately: can the save be fully parsed?
 
 Decompress the payload and read the GVAS header. This is what save editors and
-analysis tools need.
+analysis tools need. It is reported on its own line and does not affect whether your
+backup is intact.
 
 **On current Palworld this fails, and that's worth knowing.**
 
@@ -81,8 +110,8 @@ payload *is*. Don't trust it to pick a decompressor.
 
 **The practical consequence:** deep save parsing is currently gated behind a
 proprietary codec. Integrity checking is not, because the header check reads only
-the declared length and the file size. Tier 1 passes while Tier 2 fails, and for
-backup purposes that is a perfectly good outcome.
+the declared length and the file size. Files come back **verified** while deep parsing
+fails, and for backup purposes that is a perfectly good outcome.
 
 If you have information about the current payload codec, please open an issue — that
 would be useful to everyone working on Palworld tooling.
@@ -120,13 +149,14 @@ a torn save too.
 
 ## Limitations — read this
 
-- **Tier 1 proves the container is complete and coherent. It is not a restore test.**
-  A file can pass every check here and still be logically broken in ways only the
-  game can detect. Nothing short of an actual restore proves a restore.
-- Tier 2 fails on current Palworld for everyone, not just you. See above.
-- Unknown `save_type` bytes are reported as failures rather than guessed at. If
-  Palworld changes format again, you'll get a clear "unrecognised" instead of a
-  confident wrong answer.
+- **"verified" proves the container is complete and coherent. It is not a restore
+  test.** A file can pass every check here and still be logically broken in ways only
+  the game can detect. Nothing short of an actual restore proves a restore.
+- Deep parsing fails on current Palworld for everyone, not just you. See above.
+- Unfamiliar signatures and unknown `save_type` bytes come back **unverified** rather
+  than being guessed at in either direction. You get an honest "cannot tell" instead
+  of a confident wrong answer — in either direction, since calling an undamaged file
+  broken is its own kind of wrong.
 - It reads files. It never writes to, modifies, or uploads anything.
 
 ## FAQ

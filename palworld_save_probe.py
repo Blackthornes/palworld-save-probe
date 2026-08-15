@@ -12,23 +12,32 @@ looks fine, tar exits 0, your backup log says success, and you find out at resto
 This script reads the save container header and tells you whether each file is
 complete or was copied mid-write. It catches a single missing byte.
 
-It reports TWO separate verdicts, because they answer different questions:
+IS THIS BACKUP INTACT? -- three answers, not two
+------------------------------------------------
+  verified    The format is one this tool knows, and every check passed. The file
+              is complete and we can say so.
+  unverified  The file looks structurally plausible, but its format signature is
+              not one we recognise, so the checks cannot be given meaning. NOT a
+              sign of damage -- an inability to prove the file is sound. Usually it
+              means Palworld changed its save format and this tool needs updating.
+  failed      A check actively failed: truncation, trailing data, a null header.
+              The file is damaged.
 
-  TIER 1 -- Is this backup intact?
-     Is the container header coherent, and is the payload the length the header
-     says it should be? This needs no understanding of the game's data -- only
-     that the file is whole. For backup purposes, this is the answer you want.
+"unverified" exists because a pass/fail bool would force the wrong answer. A file
+with an unfamiliar signature can satisfy the length check while that check proves
+nothing -- if the layout changed, the bytes read as `compressed_len` may not be
+`compressed_len` at all. Reporting that as a pass would be a quieter version of tar
+exiting 0 on a torn save: a success that is not evidence of anything.
 
-  TIER 2 -- Can this save be fully parsed?
-     Can the payload be decompressed to a readable GVAS blob? This is what save
-     editors and analysis tools need.
+CAN THIS SAVE BE FULLY PARSED? (deep parse)
+-------------------------------------------
+Can the payload be decompressed to a readable GVAS blob? This is what save editors
+and analysis tools need. On current Palworld it fails for everyone -- the payload
+codec appears to be proprietary. That blocks save editing; it does not block knowing
+whether your backup is complete.
 
-TIER 1 CAN PASS WHILE TIER 2 FAILS, and on current Palworld it does, for everyone.
-The payload codec appears to be proprietary. That blocks save editing; it does not
-block knowing whether your backup is complete.
-
-Important limitation: passing Tier 1 proves the file is complete and coherent. It is
-not a restore test. Nothing short of an actual restore proves a restore.
+Important limitation: "verified" proves the file is complete and coherent. It is not
+a restore test. Nothing short of an actual restore proves a restore.
 
 USAGE
 -----
@@ -44,7 +53,12 @@ USAGE
 No dependencies beyond the Python standard library. Optional: `zstandard`, `lz4`
 improve diagnosis if the payload turns out to use those codecs.
 
-Exit codes:  0 = Tier 1 passed   1 = Tier 1 failed   2 = usage/IO error
+Exit codes:
+  0  every file verified
+  1  at least one file FAILED a check -- it is damaged
+  3  nothing failed, but at least one file could not be verified (unfamiliar
+     format). Not damage; an inability to prove the file is sound.
+  2  usage or IO error
 """
 
 import argparse
@@ -60,7 +74,16 @@ import zlib
 # (cheahjs/palworld-save-tools, palsav.py + gvas.py)
 # ---------------------------------------------------------------------------
 
-KNOWN_MAGIC = b"PlZ"          # the older, widely documented magic value
+LEGACY_MAGIC = b"PlZ"         # the older, widely documented magic value
+CURRENT_MAGIC = b"PlM"        # what Palworld actually writes today
+KNOWN_MAGICS = (LEGACY_MAGIC, CURRENT_MAGIC)
+
+# The three outcomes a file check can have. A pass/fail bool cannot express the
+# middle one, and the middle one is where honesty lives: a file can satisfy every
+# check we know how to run and still not be something anyone can vouch for.
+VERIFIED = "verified"
+UNVERIFIED = "unverified"
+FAILED = "failed"
 CHUNK_MAGIC = b"CNK"          # chunked wrapper; real header sits 12 bytes later
 GVAS_MAGIC = 0x53415647       # b"GVAS" little-endian
 
@@ -225,6 +248,7 @@ def probe_file(path: str) -> dict:
         "file": path,
         "name": name,
         "role": SAVE_ROLES.get(name, "player save" if name.endswith(".sav") else "unknown"),
+        "state": FAILED,
         "tier1_pass": False,
         "tier2_pass": False,
         "notes": [],
@@ -266,7 +290,7 @@ def probe_file(path: str) -> dict:
     r["chunked"] = chunked
     r["magic_bytes"] = magic.decode("latin-1", errors="replace")
     r["magic_hex"] = binascii.hexlify(magic).decode()
-    r["magic_is_known"] = (magic == KNOWN_MAGIC)
+    r["magic_is_known"] = (magic in KNOWN_MAGICS)
     r["save_type_byte"] = f"0x{save_type:02X}"
     r["save_type_meaning"] = SAVE_TYPES.get(save_type, "UNKNOWN save type")
     r["declared_uncompressed_len"] = uncompressed_len
@@ -282,9 +306,10 @@ def probe_file(path: str) -> dict:
 
     if not r["magic_is_known"]:
         r["notes"].append(
-            f"Magic is {r['magic_bytes']!r}, not the documented {KNOWN_MAGIC.decode()!r}. "
-            "The container signature has changed; this is informational, not a fault "
-            "in your file."
+            f"Magic is {r['magic_bytes']!r}, which is neither of the signatures this "
+            f"tool knows ({LEGACY_MAGIC.decode()!r}, {CURRENT_MAGIC.decode()!r}). The "
+            "checks below only mean something if the layout is unchanged, so this "
+            "file cannot be vouched for either way."
         )
 
     # --- Tier 1: structural integrity ------------------------------------
@@ -357,10 +382,24 @@ def probe_file(path: str) -> dict:
         # If we cannot decompress, Tier 1 can still pass on header coherence alone,
         # but only if the declared lengths are self-consistent.
         if save_type not in SAVE_TYPES:
-            structural_ok = False
-            r["notes"].append("Unknown save_type byte - cannot validate structurally.")
+            r["notes"].append(
+                "Unknown save_type byte - the layout is unknown, so the checks below "
+                "cannot be given meaning. Not a detected fault."
+            )
 
-    r["tier1_pass"] = structural_ok
+    # A detected fault outranks an unfamiliar format: when in doubt, distrust.
+    if not structural_ok:
+        r["state"] = FAILED
+    elif not r["magic_is_known"] or save_type not in SAVE_TYPES:
+        # Every check passed, but the checks only mean something if the layout is
+        # what we assume. An unfamiliar signature is evidence that it might not be.
+        r["state"] = UNVERIFIED
+    else:
+        r["state"] = VERIFIED
+
+    # Retained so anything scripting against the old JSON keeps working. Only a
+    # fully verified file counts as a pass.
+    r["tier1_pass"] = (r["state"] == VERIFIED)
     return r
 
 
@@ -388,7 +427,7 @@ def collect(path: str):
 # without a real server. Proves the probe detects a torn write.
 # ---------------------------------------------------------------------------
 
-def build_fake_sav(gvas_ok=True, truncate=0, save_type=0x31, magic=KNOWN_MAGIC,
+def build_fake_sav(gvas_ok=True, truncate=0, save_type=0x31, magic=CURRENT_MAGIC,
                    null_header=False):
     if null_header:
         return b"\x00" * 64
@@ -433,27 +472,34 @@ def selftest():
     print("Running self-test - validating the probe's own logic on synthetic saves.\n")
     probe_size = len(build_fake_sav())
     cases = [
-        ("healthy save", dict(), True, True),
-        ("TORN WRITE - last 1 byte lost", dict(truncate=1), False, False),
+        ("healthy save (current 'PlM' signature)", dict(), VERIFIED, True),
+        ("healthy save (legacy 'PlZ' signature)",
+         dict(magic=LEGACY_MAGIC), VERIFIED, True),
+        ("TORN WRITE - last 1 byte lost", dict(truncate=1), FAILED, False),
         ("TORN WRITE - last 5% of payload lost",
-         dict(truncate=max(2, probe_size // 20)), False, False),
-        ("unknown magic 'PlM'", dict(magic=b"PlM"), True, True),
-        ("valid container, non-GVAS payload", dict(gvas_ok=False), True, False),
-        ("all-null header (aborted write)", dict(null_header=True), False, False),
+         dict(truncate=max(2, probe_size // 20)), FAILED, False),
+        ("all-null header (aborted write)", dict(null_header=True), FAILED, False),
+        ("valid container, non-GVAS payload", dict(gvas_ok=False), VERIFIED, False),
+        # Neither of these is damaged, and neither can be vouched for.
+        ("unfamiliar signature 'PlQ'", dict(magic=b"PlQ"), UNVERIFIED, True),
+        ("unknown save_type byte", dict(save_type=0x77), UNVERIFIED, True),
+        # A real defect outranks an unfamiliar signature.
+        ("unfamiliar signature AND truncated",
+         dict(magic=b"PlQ", truncate=1), FAILED, False),
     ]
     ok = True
     with tempfile.TemporaryDirectory() as td:
-        for label, kwargs, want_t1, want_t2 in cases:
+        for label, kwargs, want_state, want_t2 in cases:
             p = os.path.join(td, "Level.sav")
             with open(p, "wb") as f:
                 f.write(build_fake_sav(**kwargs))
             r = probe_file(p)
-            t1, t2 = r["tier1_pass"], r["tier2_pass"]
-            good = (t1 == want_t1 and t2 == want_t2)
+            state, t2 = r["state"], r["tier2_pass"]
+            good = (state == want_state and t2 == want_t2)
             ok = ok and good
             print(f"  [{'PASS' if good else 'FAIL'}] {label}")
             print(f"         magic={r.get('magic_bytes')!r} "
-                  f"tier1={t1} (want {want_t1})  tier2={t2} (want {want_t2})")
+                  f"state={state} (want {want_state})  tier2={t2} (want {want_t2})")
             for n in r["notes"]:
                 print(f"         - {n}")
             print()
@@ -493,7 +539,14 @@ def main():
     else:
         report(results)
 
-    return 0 if all(r["tier1_pass"] for r in results) else 1
+    # Exit codes are a contract people script against, so the three states get three
+    # distinct codes rather than being squashed into pass/fail. A detected fault
+    # outranks an unverifiable file.
+    if any(r["state"] == FAILED for r in results):
+        return 1
+    if any(r["state"] == UNVERIFIED for r in results):
+        return 3
+    return 0
 
 
 def report(results):
@@ -535,10 +588,13 @@ def report(results):
             print(f"  GVAS            : {gv.get('error','not present')}")
         for n in r["notes"]:
             print(f"  note            : {n}")
-        print(f"  TIER 1 (backup) : {'PASS' if r['tier1_pass'] else 'FAIL'}")
-        print(f"  TIER 2 (deep)   : {'PASS' if r['tier2_pass'] else 'FAIL'}")
+        print(f"  BACKUP INTACT   : {r['state'].upper()}")
+        print(f"  DEEP PARSE      : {'PASS' if r['tier2_pass'] else 'FAIL'}")
 
-    t1 = sum(1 for r in results if r["tier1_pass"])
+    verified = sum(1 for r in results if r.get("state") == VERIFIED)
+    unverified = sum(1 for r in results if r.get("state") == UNVERIFIED)
+    broken = sum(1 for r in results if r.get("state", FAILED) == FAILED)
+    t1 = verified
     t2 = sum(1 for r in results if r["tier2_pass"])
     n = len(results)
 
