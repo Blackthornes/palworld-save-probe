@@ -34,13 +34,13 @@ python3 palworld_save_probe.py --selftest
 
 Palworld does not write saves synchronously.
 
-`POST /v1/api/save` returns **200 on acceptance, not on durable write**. The server
-says "got it" and then keeps writing for anywhere from a few seconds to well over a
-minute, depending on world size, disk speed, and load.
+`POST /v1/api/save` returns **200 on acceptance, not on durable write** — the server
+says "got it" and finishes writing afterwards. Separately, the game rewrites the save
+on its own timer whether or not anything asked it to.
 
-Copy the file inside that window and you get a **torn save**: a file that is a few
-hundred bytes short of complete. It looks fine. `tar` exits 0. Your backup log says
-success. You find out when you restore.
+Copy the file during one of those writes and you get a **torn save**: a file shorter
+than its own header says it should be. It looks fine. `tar` exits 0. Your backup log
+says success. You find out when you restore.
 
 The failure is silent by construction, which is why it survives in so many setups:
 nothing in the normal path ever disagrees with you.
@@ -116,19 +116,25 @@ fails, and for backup purposes that is a perfectly good outcome.
 If you have information about the current payload codec, please open an issue — that
 would be useful to everyone working on Palworld tooling.
 
-## Why a fixed delay doesn't solve it
+## Why waiting a fixed number of seconds isn't enough
 
-The intuitive fix is to wait a few seconds after requesting a save before copying.
-That helps, but it can't be relied on, because there is no correct constant to pick.
+The obvious fix is to sleep for a few seconds after asking the server to save. That
+helps, and it beats not waiting. It is not a guarantee, for two separate reasons.
 
-The delay isn't a constant. It scales with world size, disk speed, and current server
-load — the same server can need different amounts of time on two consecutive saves.
-Any fixed value is too long for a small world and too short for a large one, and which
-way it fails depends on the world you didn't test against.
+**The save request returns before the write finishes.** That part is measurable: on a
+test server `POST /v1/api/save` returned in about 60 ms while the file was still being
+written for some tens of milliseconds after that. The gap is small on a small world. How
+it behaves on a large, busy one is not something we have measured, so a delay chosen
+against a small world is a delay chosen without evidence.
 
-The reliable approach is to watch the file until it stops changing, then copy — and
-then check the result anyway. "Probably finished" isn't the standard you want for the
-only copy of a two-hundred-hour world.
+**The game rewrites the save on its own schedule regardless.** `AutoSaveSpan` defaults
+to 30 seconds, so `Level.sav` is rewritten every 30 seconds whether or not anything
+asked for it. A backup that copies at an arbitrary moment can land inside one of those
+writes, and waiting after *your* save request does nothing about *the game's*.
+
+So the reliable approach has two parts: watch the file until it stops changing before
+copying it, then check what you copied. The second part is the one that holds whatever
+the world size, the disk speed, or the timing luck — which is what this tool is for.
 
 ## What a good backup process does
 
